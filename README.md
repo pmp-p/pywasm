@@ -4,7 +4,7 @@
 
 A WebAssembly interpreter written in pure Python.
 
-The wasm version currently in use is: [WebAssembly Core Specification W3C Working Draft, 4 September 2018](https://www.w3.org/TR/2018/WD-wasm-core-1-20180904/). Just like Firefox or Chrome does.
+The wasm version currently in use is: [WebAssembly Core Specification, W3C Recommendation, 5 December 2019](https://www.w3.org/TR/wasm-core-1/). Just like Firefox or Chrome does.
 
 # Installation
 
@@ -22,8 +22,8 @@ $ pip3 install pywasm
 import pywasm
 # pywasm.on_debug()
 
-vm = pywasm.load('./examples/fib.wasm')
-r = vm.exec('fib', [10])
+runtime = pywasm.load('./examples/fib.wasm')
+r = runtime.exec('fib', [10])
 print(r) # 55
 ```
 
@@ -37,22 +37,26 @@ A brief description for `./examples`
 | ./examples/str.wasm | Export a function which returns string       |
 | ./examples/sum.wasm | Equal difference series summation            |
 
+Of course there are some more complicated examples!
+
+- Zstandard decompression algorithm: [https://github.com/dholth/zstdpy](https://github.com/dholth/zstdpy)
+- Run AssemblyScript on pywasm: [https://github.com/mohanson/pywasm_assemblyscript](https://github.com/mohanson/pywasm_assemblyscript)
+
 # Test
 
-```
-python ./tests/test_spec.py
+```sh
+$ python3 ./test/test_spec.py
 ```
 
 Tested in the following environments:
 
-- Python 3.7.3
-- Python 3.6.5
+- Python >= 3.6
 
 # Thanks
 
-- [wagon](https://github.com/go-interpreter/wagon), The author is very kind
+- [wagon](https://github.com/go-interpreter/wagon)
 - [warpy](https://github.com/kanaka/warpy)
 
 # License
 
-[WTFPL](./LICENSE)
+[MIT](./LICENSE)
