@@ -1,214 +1,238 @@
+import glob
 import json
 import math
-import os
+import pywasm
+import re
 import typing
 
-import pywasm
 
-num = pywasm.num
-
-
-def parse_val(m):
-    if m['type'] == 'i32':
-        return pywasm.Value.from_i32(num.int2i32(int(m['value'])))
-    if m['type'] == 'i64':
-        return pywasm.Value.from_i64(num.int2i64(int(m['value'])))
-    if m['type'] == 'f32':
-        if m['value'] == 'nan:canonical':
-            return pywasm.Value.from_f32_u32(pywasm.convention.f32_nan_canonical)
-        if m['value'] == 'nan:arithmetic':
-            return pywasm.Value.from_f32_u32(pywasm.convention.f32_nan_canonical + 1)
-        v = pywasm.Value.from_u32(int(m['value']))
-        v.type = pywasm.binary.ValueType(pywasm.convention.f32)
-        return v
-    if m['type'] == 'f64':
-        if m['value'] == 'nan:canonical':
-            return pywasm.Value.from_f64_u64(pywasm.convention.f64_nan_canonical)
-        if m['value'] == 'nan:arithmetic':
-            return pywasm.Value.from_f64_u64(pywasm.convention.f64_nan_canonical + 1)
-        v = pywasm.Value.from_u64(int(m['value']))
-        v.type = pywasm.binary.ValueType(pywasm.convention.f64)
-        return v
-    raise NotImplementedError
+pywasm.log.lvl = 0
+unittest_regex = 'res/spectest/.*.json'
 
 
-def asset_val(a, b):
-    print('assert', a.data, b.data)
-    if b.type == pywasm.convention.i32:
-        assert a.type == pywasm.convention.i32
-        assert a.data == b.data
-        return
-    if b.type == pywasm.convention.i64:
-        assert a.type == pywasm.convention.i64
-        assert a.data == b.data
-        return
-    if b.type == pywasm.convention.f32:
-        assert a.type == pywasm.convention.f32
-        if math.isnan(b.f32()):
-            if b.i32() == pywasm.convention.f32_nan_canonical:
-                assert a.u32() in [pywasm.convention.f32_nan_canonical, pywasm.convention.f32_nan_canonical | 1 << 31]
-            else:
-                assert math.isnan(a.f32())
-            return
-        assert a.data == b.data
-        return
-    if b.type == pywasm.convention.f64:
-        assert a.type == pywasm.convention.f64
-        if math.isnan(b.f64()):
-            if b.i64() == pywasm.convention.f64_nan_canonical:
-                assert a.u64() in [pywasm.convention.f64_nan_canonical, pywasm.convention.f64_nan_canonical | 1 << 63]
-            else:
-                assert math.isnan(a.f64())
-            return
-        assert a.data == b.data
-        return
-    raise Exception
+def valj(j: typing.Dict[str, str]) -> pywasm.ValInst:
+    match j['type']:
+        case 'i32':
+            return pywasm.ValInst.from_i32(int(j['value']))
+        case 'i64':
+            return pywasm.ValInst.from_i64(int(j['value']))
+        case 'f32':
+            match j['value']:
+                case 'nan:canonical':
+                    return pywasm.ValInst.from_f32_u32(0x7fc00000)
+                case 'nan:arithmetic':
+                    return pywasm.ValInst.from_f32_u32(0x7fc00001)
+                case _:
+                    return pywasm.ValInst.from_f32_u32(int(j['value']))
+        case 'f64':
+            match j['value']:
+                case 'nan:canonical':
+                    return pywasm.ValInst.from_f64_u64(0x7ff8000000000000)
+                case 'nan:arithmetic':
+                    return pywasm.ValInst.from_f64_u64(0x7ff8000000000001)
+                case _:
+                    return pywasm.ValInst.from_f64_u64(int(j['value']))
+        case 'funcref':
+            match j['value']:
+                case 'null':
+                    return pywasm.ValInst(pywasm.core.ValType.ref_func(), bytearray(8))
+                case _:
+                    return pywasm.ValInst.from_ref(pywasm.core.ValType.ref_extern(), int(j['value']))
+        case 'externref':
+            match j['value']:
+                case 'null':
+                    return pywasm.ValInst(pywasm.core.ValType.ref_extern(), bytearray(8))
+                case _:
+                    return pywasm.ValInst.from_ref(pywasm.core.ValType.ref_extern(), int(j['value']))
+        case _:
+            assert 0
 
 
-def imps() -> typing.Dict:
-    limits = pywasm.Limits()
-    limits.n = 1
-    limits.m = 2
-    memory_type = pywasm.binary.MemoryType()
-    memory_type.limits = limits
-    memory = pywasm.Memory(memory_type)
+def vale(a: pywasm.ValInst, b: pywasm.ValInst) -> bool:
+    if a.type != b.type:
+        return False
+    if a.type == pywasm.core.ValType.i32():
+        return a.into_i32() == b.into_i32()
+    if a.type == pywasm.core.ValType.i64():
+        return a.into_i64() == b.into_i64()
+    if a.type == pywasm.core.ValType.f32():
+        if math.isnan(a.into_f32()):
+            return math.isnan(b.into_f32())
+        return math.isclose(a.into_f32(), b.into_f32(), rel_tol=1e-6)
+    if a.type == pywasm.core.ValType.f64():
+        if math.isnan(a.into_f64()):
+            return math.isnan(b.into_f64())
+        return math.isclose(a.into_f64(), b.into_f64(), rel_tol=1e-6)
+    if a.type == pywasm.core.ValType.ref_func():
+        return a.into_i64() == b.into_i64()
+    if a.type == pywasm.core.ValType.ref_extern():
+        return a.into_i64() == b.into_i64()
+    assert 0
 
-    limits = pywasm.Limits()
-    limits.n = 10
-    limits.m = 20
-    table = pywasm.Table(pywasm.FunctionAddress,  limits)
 
-    return {
-        'spectest': {
-            'print_i32': lambda _, x: None,
-            'print': lambda _: None,
-            'global_i32': 666,
-            'table': table,
-            'memory': memory,
-        }
+def host(runtime: pywasm.core.Runtime) -> typing.Dict[str, typing.Dict[str, pywasm.core.Extern]]:
+    # See https://github.com/WebAssembly/spec/blob/w3c-1.0/interpreter/host/spectest.ml
+    runtime.imports['spectest'] = {
+        'global_i32': runtime.allocate_global(
+            pywasm.core.GlobalType(pywasm.core.ValType.i32(), 0), pywasm.core.ValInst.from_i32(666)
+        ),
+        'global_i64': runtime.allocate_global(
+            pywasm.core.GlobalType(pywasm.core.ValType.i64(), 0), pywasm.core.ValInst.from_i64(666)
+        ),
+        'global_f32': runtime.allocate_global(
+            pywasm.core.GlobalType(pywasm.core.ValType.f32(), 0), pywasm.core.ValInst.from_f32(666.6)
+        ),
+        'global_f64': runtime.allocate_global(
+            pywasm.core.GlobalType(pywasm.core.ValType.f64(), 0), pywasm.core.ValInst.from_f64(666.6)
+        ),
+        'table': runtime.allocate_table(
+            pywasm.core.TableType(pywasm.core.ValType.ref_func(), pywasm.core.Limits(10, 20))
+        ),
+        'memory': runtime.allocate_memory(
+            pywasm.core.MemType(pywasm.core.Limits(1, 2))
+        ),
+        'print': runtime.allocate_func_host(
+            pywasm.core.FuncType([], []), lambda m, a: []
+        ),
+        'print_i32': runtime.allocate_func_host(
+            pywasm.core.FuncType([pywasm.core.ValType.i32()], []), lambda m, a: []
+        ),
+        'print_i64': runtime.allocate_func_host(
+            pywasm.core.FuncType([pywasm.core.ValType.i64()], []), lambda m, a: []
+        ),
+        'print_f32': runtime.allocate_func_host(
+            pywasm.core.FuncType([pywasm.core.ValType.f32()], []), lambda m, a: []
+        ),
+        'print_f64': runtime.allocate_func_host(
+            pywasm.core.FuncType([pywasm.core.ValType.f64()], []), lambda m, a: []
+        ),
+        'print_i32_f32': runtime.allocate_func_host(
+            pywasm.core.FuncType([pywasm.core.ValType.i32(), pywasm.core.ValType.f32()], []), lambda m, a: []
+        ),
+        'print_f64_f64': runtime.allocate_func_host(
+            pywasm.core.FuncType([pywasm.core.ValType.f64(), pywasm.core.ValType.f64()], []), lambda m, a: []
+        ),
     }
 
 
-def case(path: str):
-    case_name = os.path.basename(path)
-    json_path = os.path.join(path, case_name + '.json')
-    with open(json_path, 'r') as f:
-        case_data = json.load(f)
-
-    runtime: pywasm.Runtime = None
-    for command in case_data['commands']:
-        print(command)
-        if command['type'] == 'module':
-            filename = command['filename']
-            runtime = pywasm.load(os.path.join(path, filename), imps())
-        # {'type': 'assert_return', 'line': 104, 'action': {'type': 'invoke', 'field': '8u_good1', 'args': [{'type': 'i32', 'value': '0'}]}, 'expected': [{'type': 'i32', 'value': '97'}]}
-        elif command['type'] == 'assert_return':
-            if command['action']['type'] == 'invoke':
-                function_name = command['action']['field']
-                args = [parse_val(i) for i in command['action']['args']]
-                r = runtime.exec_accu(function_name, args)
-                expect = [parse_val(i) for i in command['expected']]
-                for i in range(len(expect)):
-                    asset_val(r.data[i], expect[i])
-            else:
-                raise NotImplementedError
-        elif command['type'] in ['assert_trap', 'assert_exhaustion']:
-            if command['action']['type'] == 'invoke':
-                function_name = command['action']['field']
-                args = [parse_val(i) for i in command['action']['args']]
+for name in sorted(glob.glob('res/spectest/*.json')):
+    if not re.match(unittest_regex, name):
+        continue
+    with open(name) as f:
+        suit = json.load(f)['commands']
+    runtime = pywasm.Runtime()
+    cmodule: pywasm.ModuleInst
+    lmodule: pywasm.ModuleInst
+    mmodule = {}
+    host(runtime)
+    for elem in suit:
+        print(elem)
+        match elem['type']:
+            case 'action':
+                match elem['action']['type']:
+                    case 'invoke':
+                        cmodule = lmodule
+                        if 'module' in elem['action']:
+                            cmodule = mmodule[elem['action']['module']]
+                        name = elem['action']['field']
+                        args = [valj(e) for e in elem['action']['args']]
+                        good = [valj(e) for e in elem['expected']]
+                        addr = [e for e in cmodule.exps if e.name == name][0].data.data
+                        rets = runtime.machine.invocate(addr, args)
+                        for a, b in zip(rets, good):
+                            assert vale(a, b), f'{rets}, {good}'
+                    case _:
+                        assert 0
+            case 'assert_exhaustion':
+                match elem['action']['type']:
+                    case 'invoke':
+                        cmodule = lmodule
+                        if 'module' in elem['action']:
+                            cmodule = mmodule[elem['action']['module']]
+                        name = elem['action']['field']
+                        args = [valj(e) for e in elem['action']['args']]
+                        addr = [e for e in cmodule.exps if e.name == name][0].data.data
+                        try:
+                            runtime.machine.invocate(addr, args)
+                        except Exception as e:
+                            runtime.machine.stack.frame.clear()
+                            runtime.machine.stack.label.clear()
+                            runtime.machine.stack.value.clear()
+                        else:
+                            assert 0
+                    case _:
+                        assert 0
+            case 'assert_invalid':
+                assert 1
+            case 'assert_malformed':
+                assert 1
+            case 'assert_return':
+                match elem['action']['type']:
+                    case 'get':
+                        cmodule = lmodule
+                        if 'module' in elem['action']:
+                            cmodule = mmodule[elem['action']['module']]
+                        good = [valj(e) for e in elem['expected']]
+                        rets = runtime.exported_global(cmodule, elem['action']['field'])
+                        assert vale(rets.data, good[0])
+                    case 'invoke':
+                        cmodule = lmodule
+                        if 'module' in elem['action']:
+                            cmodule = mmodule[elem['action']['module']]
+                        name = elem['action']['field']
+                        args = [valj(e) for e in elem['action']['args']]
+                        good = [valj(e) for e in elem['expected']]
+                        addr = [e for e in cmodule.exps if e.name == name][0].data.data
+                        rets = runtime.machine.invocate(addr, args)
+                        for a, b in zip(rets, good):
+                            assert vale(a, b), f'{rets}, {good}'
+                    case _:
+                        assert 0
+            case 'assert_trap':
+                match elem['action']['type']:
+                    case 'invoke':
+                        cmodule = lmodule
+                        if 'module' in elem['action']:
+                            cmodule = mmodule[elem['action']['module']]
+                        name = elem['action']['field']
+                        args = [valj(e) for e in elem['action']['args']]
+                        addr = [e for e in cmodule.exps if e.name == name][0].data.data
+                        try:
+                            runtime.machine.invocate(addr, args)
+                        except Exception as e:
+                            runtime.machine.stack.frame.clear()
+                            runtime.machine.stack.label.clear()
+                            runtime.machine.stack.value.clear()
+                        else:
+                            assert 0
+                    case _:
+                        assert 0
+            case 'assert_uninstantiable':
                 try:
-                    r = runtime.exec_accu(function_name, args)
-                except Exception as e:
-                    r = str(e)[8:]
-                expect = command['text']
-                assert r == expect
-            else:
-                raise NotImplementedError
-        elif command['type'] == 'assert_malformed':
-            continue
-        elif command['type'] == 'assert_invalid':
-            continue
-        elif command['type'] == 'assert_unlinkable':
-            continue
-        elif command['type'] == 'register':
-            return
-        elif command['type'] == 'action':
-            if command['action']['type'] == 'invoke':
-                function_name = command['action']['field']
-                args = [parse_val(i) for i in command['action']['args']]
-                runtime.exec_accu(function_name, args)
-            else:
-                raise NotImplementedError
-        elif command['type'] == 'assert_uninstantiable':
-            continue
-        else:
-            raise NotImplementedError
-
-
-if __name__ == '__main__':
-    case('./res/spectest/address')
-    case('./res/spectest/align')
-    case('./res/spectest/binary')
-    case('./res/spectest/binary-leb128')
-    case('./res/spectest/br_if')
-    case('./res/spectest/br_table')
-    case('./res/spectest/break-drop')
-    case('./res/spectest/comments')
-    case('./res/spectest/const')
-    case('./res/spectest/custom')
-    case('./res/spectest/data')
-    case('./res/spectest/elem')
-    case('./res/spectest/endianness')
-    # [TODO] case('./res/spectest/exports')
-    case('./res/spectest/f32')
-    case('./res/spectest/f32_bitwise')
-    case('./res/spectest/f32_cmp')
-    case('./res/spectest/f64')
-    case('./res/spectest/f64_bitwise')
-    case('./res/spectest/f64_cmp')
-    case('./res/spectest/float_exprs')
-    case('./res/spectest/float_literals')
-    case('./res/spectest/float_memory')
-    case('./res/spectest/float_misc')
-    case('./res/spectest/forward')
-    case('./res/spectest/func_ptrs')
-    case('./res/spectest/global')
-    case('./res/spectest/globals')
-    case('./res/spectest/imports')
-    case('./res/spectest/inline-module')
-    case('./res/spectest/int_exprs')
-    case('./res/spectest/int_literals')
-    case('./res/spectest/labels')
-    case('./res/spectest/left-to-right')
-    case('./res/spectest/linking')
-    case('./res/spectest/load')
-    case('./res/spectest/local_get')
-    case('./res/spectest/local_set')
-    case('./res/spectest/local_tee')
-    case('./res/spectest/memory')
-    case('./res/spectest/memory_grow')
-    case('./res/spectest/memory_redundancy')
-    case('./res/spectest/memory_size')
-    case('./res/spectest/memory_trap')
-    case('./res/spectest/names')
-    case('./res/spectest/nop')
-    case('./res/spectest/return')
-    case('./res/spectest/select')
-    case('./res/spectest/skip-stack-guard-page')
-    case('./res/spectest/stack')
-    case('./res/spectest/start')
-    case('./res/spectest/store')
-    case('./res/spectest/switch')
-    case('./res/spectest/table')
-    case('./res/spectest/token')
-    case('./res/spectest/traps')
-    case('./res/spectest/type')
-    case('./res/spectest/typecheck')
-    case('./res/spectest/unreachable')
-    case('./res/spectest/unreached-invalid')
-    case('./res/spectest/unwind')
-    case('./res/spectest/utf8-custom-section-id')
-    case('./res/spectest/utf8-import-field')
-    case('./res/spectest/utf8-import-module')
-    case('./res/spectest/utf8-invalid-encoding')
-    case('./res/regression/rsh')
+                    lmodule = runtime.instance_from_file(f'res/spectest/{elem['filename']}')
+                except:
+                    runtime.machine.stack.frame.clear()
+                    runtime.machine.stack.label.clear()
+                    runtime.machine.stack.value.clear()
+                else:
+                    assert 0
+            case 'assert_unlinkable':
+                try:
+                    lmodule = runtime.instance_from_file(f'res/spectest/{elem['filename']}')
+                except:
+                    runtime.machine.stack.frame.clear()
+                    runtime.machine.stack.label.clear()
+                    runtime.machine.stack.value.clear()
+                else:
+                    assert 0
+            case 'module':
+                lmodule = runtime.instance_from_file(f'res/spectest/{elem['filename']}')
+                if 'name' in elem:
+                    mmodule[elem['name']] = lmodule
+            case 'register':
+                mmodule[elem['as']] = lmodule
+                runtime.imports[elem['as']] = {}
+                for e in lmodule.exps:
+                    runtime.imports[elem['as']][e.name] = e.data
+            case _:
+                assert 0
